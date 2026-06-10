@@ -159,12 +159,34 @@ export async function POST(req: Request) {
           return;
         }
 
+        // A 5xx from the tunnel/proxy (502/503/504/530…) means the Pi Signer is
+        // DOWN/unreachable — NOT a policy decision. Don't claim "the guardian held".
+        if (res.status >= 500) {
+          log(
+            `⚠ Pi Signer unreachable (HTTP ${res.status} from the tunnel). Nothing reached the key — this is NOT a policy block.`,
+          );
+          emit({ type: "result", blocked: false, error: "signer unreachable", status: res.status });
+          controller.close();
+          return;
+        }
+
         let payload: { reason?: string; hash?: string; success?: boolean } = {};
         try {
           payload = await res.json();
         } catch {
           payload = {};
         }
+
+        // 401 = SIGNER_TOKEN missing/mismatched — a config problem, not the guardian.
+        if (res.status === 401) {
+          log(
+            "⚠ Signer returned 401 — SIGNER_TOKEN missing/mismatched (config), not a policy block.",
+          );
+          emit({ type: "result", blocked: false, error: "signer auth failed (token)", status: 401 });
+          controller.close();
+          return;
+        }
+
         const reason = payload.reason ?? lineToReason(scenario);
 
         if (scenario === "normal") {

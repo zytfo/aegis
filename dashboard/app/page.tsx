@@ -94,6 +94,7 @@ export default function Page() {
 
   // pagination for the audit / payment history list
   const [page, setPage] = useState<number>(1);
+  const [deniedPage, setDeniedPage] = useState<number>(1);
 
   const poll = useCallback(async () => {
     try {
@@ -142,6 +143,18 @@ export default function Page() {
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
   }, [page, pageCount]);
+
+  // pagination for the "Blocked by the Guardian" (denied) list
+  const deniedOrdered = denied.slice().reverse();
+  const deniedPageCount = Math.max(1, Math.ceil(deniedOrdered.length / PAGE_SIZE));
+  const deniedSafePage = Math.min(deniedPage, deniedPageCount);
+  const deniedRows = deniedOrdered.slice(
+    (deniedSafePage - 1) * PAGE_SIZE,
+    deniedSafePage * PAGE_SIZE,
+  );
+  useEffect(() => {
+    if (deniedPage > deniedPageCount) setDeniedPage(deniedPageCount);
+  }, [deniedPage, deniedPageCount]);
 
   const runDemo = useCallback(
     async (scenario: DemoScenario) => {
@@ -511,21 +524,39 @@ export default function Page() {
                   </tr>
                 </thead>
                 <tbody>
-                  {denied
-                    .slice()
-                    .reverse()
-                    .map((a, i) => (
-                      <tr key={`d-${a.seq}-${a.ts}-${i}`}>
-                        <td className="seqcell">{a.seq ?? "—"}</td>
-                        <td className="mono" title={a.payee}>
-                          {a.payee ? shortHash(a.payee) : "—"}
-                        </td>
-                        <td className="mono">{a.amountMotes ? cspr(a.amountMotes) : "—"}</td>
-                        <td className="reason">{a.reason ?? "denied"}</td>
-                      </tr>
-                    ))}
+                  {deniedRows.map((a, i) => (
+                    <tr key={`d-${a.seq}-${a.ts}-${i}`}>
+                      <td className="seqcell">{a.seq ?? "—"}</td>
+                      <td className="mono" title={a.payee}>
+                        {a.payee ? shortHash(a.payee) : "—"}
+                      </td>
+                      <td className="mono">{a.amountMotes ? cspr(a.amountMotes) : "—"}</td>
+                      <td className="reason">{a.reason ?? "denied"}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
+            )}
+            {deniedOrdered.length > PAGE_SIZE && (
+              <div className="pager">
+                <button
+                  className="pager-btn"
+                  disabled={deniedSafePage <= 1}
+                  onClick={() => setDeniedPage((p) => Math.max(1, p - 1))}
+                >
+                  ← Prev
+                </button>
+                <span className="pager-label">
+                  page {deniedSafePage} of {deniedPageCount}
+                </span>
+                <button
+                  className="pager-btn"
+                  disabled={deniedSafePage >= deniedPageCount}
+                  onClick={() => setDeniedPage((p) => Math.min(deniedPageCount, p + 1))}
+                >
+                  Next →
+                </button>
+              </div>
             )}
           </div>
         </section>

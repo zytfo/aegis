@@ -26,8 +26,6 @@ import {
   Key,
   Transaction,
   TransactionV1,
-  RpcClient,
-  HttpHandler,
 } from "casper-js-sdk";
 
 export const NODE = "https://node.testnet.casper.network/rpc";
@@ -220,53 +218,24 @@ export async function signAndSubmit(
   TransactionV1.setSignature(v1, res.signature, PublicKey.fromHex(activePubKeyHex));
   const signed = Transaction.fromTransactionV1(v1);
 
-  // 4. Submit. Prefer the SDK RpcClient; fall back to raw JSON-RPC if it misbehaves
-  //    (the SDK's axios handler has corrupted bodies inside Next before — see casper.ts).
+  // 4. Submit through OUR server route. A browser cannot POST straight to the public
+  //    Casper node (no CORS → "Network Error" / "Failed to fetch"); /api/submit forwards
+  //    account_put_transaction server-side and returns the hash.
   onStatus?.("submitted");
-  let hash: string;
-  try {
-    const client = new RpcClient(new HttpHandler(NODE));
-    await client.putTransaction(signed);
-    hash = signed.hash.toHex();
-    await client.waitForTransaction(signed, 180_000);
-  } catch (sdkErr) {
-    // Fallback: raw account_put_transaction, mirroring the raw-fetch pattern in casper.ts.
-    try {
-      hash = await rawPutTransaction(signed);
-    } catch (rawErr) {
-      throw new Error(
-        `submit failed (sdk: ${asMsg(sdkErr)}; raw: ${asMsg(rawErr)})`,
-      );
-    }
+  const submitRes = await fetch("/api/submit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ transaction: signed.toJSON() }),
+  });
+  const submitBody = (await submitRes.json().catch(() => ({}))) as {
+    hash?: string;
+    error?: string;
+  };
+  if (!submitRes.ok || submitBody.error) {
+    throw new Error(`submit failed: ${submitBody.error ?? `HTTP ${submitRes.status}`}`);
   }
+  const hash = submitBody.hash ?? signed.hash.toHex();
 
   onStatus?.("confirmed", hash);
   return { hash };
-}
-
-function asMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
-/** Raw JSON-RPC `account_put_transaction` fallback (mirrors lib/casper.ts pattern). */
-async function rawPutTransaction(signed: Transaction): Promise<string> {
-  const txJson = signed.toJSON();
-  const res = await fetch(NODE, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "account_put_transaction",
-      params: { transaction: txJson },
-    }),
-  });
-  const body = (await res.json()) as {
-    result?: { transaction_hash?: { Version1?: string } };
-    error?: { code: number; message: string };
-  };
-  if (body.error) {
-    throw new Error(`account_put_transaction: ${body.error.code} ${body.error.message}`);
-  }
-  return body.result?.transaction_hash?.Version1 ?? signed.hash.toHex();
 }
