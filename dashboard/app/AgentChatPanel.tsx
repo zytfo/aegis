@@ -13,7 +13,7 @@ type Verdict =
   | { kind: "error"; reason: string };
 
 interface Msg {
-  who: "you" | "agent" | "page";
+  who: "you" | "agent" | "page" | "status";
   text: string;
   action?: { payee: string; amountMotes: string };
   verdict?: Verdict;
@@ -46,21 +46,56 @@ export default function AgentChatPanel({ onSettled }: { onSettled?: () => void }
       setBusy(true);
       setMsgs((m) => [...m, { who: "you", text: poisoned ? "🌐 [agent reads an untrusted web page, then handles my Data API subscription]" : text }]);
       try {
-        const r = await fetch("/api/agent", {
+        const res = await fetch("/api/agent", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ message: text, poisoned }),
         });
-        const body = await r.json().catch(() => ({}));
-        if (r.status === 429) { setErr(body.error ?? "rate limited"); return; }
-        if (!r.ok) { setErr(body.error ?? `error ${r.status}`); return; }
-        setMsgs((m) => {
-          const next = [...m];
-          if (body.injectedPage) next.push({ who: "page", text: body.injectedPage });
-          next.push({ who: "agent", text: body.agentReply ?? "(no reply)", action: body.action, verdict: body.verdict });
-          return next;
-        });
-        if (body.verdict?.kind === "paid") onSettled?.();
+        // Rate limit / bad-body stay non-stream JSON.
+        if (res.status === 429) {
+          const body = await res.json().catch(() => ({}));
+          setErr(body.error ?? "rate limited");
+          return;
+        }
+        if (!res.ok || !res.body) {
+          const body = await res.json().catch(() => ({}));
+          setErr(body.error ?? `error ${res.status}`);
+          return;
+        }
+
+        // Stream NDJSON status lines and render each as it arrives.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const chunk = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!chunk) continue;
+            let msg: { type?: string; text?: string; error?: string; agentReply?: string; action?: { payee: string; amountMotes: string }; verdict?: Verdict };
+            try {
+              msg = JSON.parse(chunk);
+            } catch {
+              continue;
+            }
+            if (msg.type === "log") {
+              setMsgs((m) => [...m, { who: "status", text: msg.text ?? "" }]);
+            } else if (msg.type === "page") {
+              setMsgs((m) => [...m, { who: "page", text: msg.text ?? "" }]);
+            } else if (msg.type === "result") {
+              if (msg.error) {
+                setErr(msg.error);
+              } else {
+                setMsgs((m) => [...m, { who: "agent", text: msg.agentReply ?? "(no reply)", action: msg.action, verdict: msg.verdict }]);
+                if (msg.verdict?.kind === "paid") onSettled?.();
+              }
+            }
+          }
+        }
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -96,6 +131,14 @@ export default function AgentChatPanel({ onSettled }: { onSettled?: () => void }
                 >
                   <strong style={{ color: "var(--red)" }}>📄 untrusted page the agent fetched (note the hidden instruction):</strong>
                   {"\n" + m.text}
+                </div>
+              ) : m.who === "status" ? (
+                <div
+                  className="term-line"
+                  key={i}
+                  style={{ opacity: 0.6, fontStyle: "italic", fontSize: 12.5, fontFamily: "var(--mono)" }}
+                >
+                  <span style={{ opacity: 0.6 }}>· </span>{m.text}
                 </div>
               ) : (
               <div className="term-line" key={i}>
