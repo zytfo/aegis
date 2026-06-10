@@ -434,6 +434,7 @@ export default function Page() {
                 no audited intents yet — start the Pi Signer and run the brain to populate this log
               </div>
             ) : (
+              <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -478,6 +479,7 @@ export default function Page() {
                     ))}
                 </tbody>
               </table>
+              </div>
             )}
             {ordered.length > PAGE_SIZE && (
               <div className="pager">
@@ -518,6 +520,7 @@ export default function Page() {
             {denied.length === 0 ? (
               <div className="empty">no denials recorded — the leash has not been tested yet</div>
             ) : (
+              <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -540,6 +543,7 @@ export default function Page() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
             {deniedOrdered.length > PAGE_SIZE && (
               <div className="pager">

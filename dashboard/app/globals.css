@@ -280,6 +280,20 @@ td.mono,
 th.mono {
   font-family: var(--mono);
 }
+/* On narrow screens the panel clips (overflow:hidden) and a 4–6 column table
+   gets cropped. Wrapping each table in .table-wrap makes it scroll horizontally
+   instead, with a min-width floor so columns stay readable rather than squished. */
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-wrap table {
+  min-width: 560px;
+}
+.table-wrap td.mono,
+.table-wrap th {
+  white-space: nowrap;
+}
 .seqcell {
   color: var(--text-faint);
   font-family: var(--mono);
