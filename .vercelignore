@@ -1,0 +1,22 @@
+# Vercel CLI upload excludes (keeps `vercel --prod` from this monorepo small).
+# NOTE: git-connected builds clone from GitHub and IGNORE this file — they use .gitignore.
+# Only dashboard/ is built (project Root Directory = dashboard); it imports nothing
+# from the sibling packages, so exclude their heavy build dirs + everything non-essential.
+
+# heavy dirs anywhere in the tree
+node_modules
+.next
+out
+target
+
+# sibling packages the dashboard build does not need
+guarded_wallet
+signer
+agent
+keys
+docs
+
+# misc
+.git
+.idea
+.DS_Store
