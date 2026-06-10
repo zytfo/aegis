@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import FundAgentPanel from "./FundAgentPanel";
+import AgentChatPanel from "./AgentChatPanel";
 
 // --- types mirrored from the API routes ----------------------------------------
 interface WalletState {
@@ -330,17 +331,20 @@ export default function Page() {
           onConfirmed={poll}
         />
 
-        {/* (c) Try it live — attack the guardian */}
+        {/* (b3) Talk to the agent — live conversational demo */}
+        <AgentChatPanel onSettled={poll} />
+
+        {/* (c) Quick presets — scripted, deterministic versions of the live demo */}
         <section className="panel full demo">
           <div className="panel-head">
-            <h2>⚡ Try it live</h2>
-            <span className="count">one works · the rest are blocked</span>
+            <h2>⚡ Quick presets (scripted)</h2>
+            <span className="count">deterministic versions · the live agent is above</span>
           </div>
           <div className="panel-body">
             <p className="note">
-              First the <strong>happy path</strong>: an in-policy payment the agent is allowed to
-              make — the Pi signs it and it lands on-chain (a real testnet pay, bounded by the period
-              cap). Then play a compromised brain: every off-policy button is denied{" "}
+              Scripted, one-click versions of the same scenarios (a reliable fallback). The{" "}
+              <strong>live</strong> agent is the panel above; here a normal in-policy payment lands
+              on-chain, and each off-policy preset is denied{" "}
               <em>before the device key is ever touched</em>.
             </p>
             <div className="demo-btns">

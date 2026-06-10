@@ -173,7 +173,11 @@ export default function FundAgentPanel({
           extension popup; the transaction calls the contract&apos;s payable{" "}
           <code className="inline">deposit</code> entry point. A deposit runs a wasm session, so it
           also costs <strong>~15 CSPR of network gas</strong> — the wallet popup shows that gas
-          figure, not your deposit amount.
+          figure, not your deposit amount. You can top up your wallet on the Casper testnet{" "}
+          <a href="https://testnet.cspr.live/tools/faucet" target="_blank" rel="noreferrer">
+            faucet ↗
+          </a>
+          .
         </p>
 
         <div className="kv">
