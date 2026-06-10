@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import FundAgentPanel from "./FundAgentPanel";
 
 // --- types mirrored from the API routes ----------------------------------------
 interface WalletState {
@@ -29,6 +30,24 @@ interface AuditEntry {
 
 const POLL_MS = 5000;
 const EXPLORER = "https://testnet.cspr.live/transaction/";
+const PAGE_SIZE = 8;
+
+// --- live demo ("Try it live") types -------------------------------------------
+type DemoScenario = "normal" | "over-limit" | "stranger" | "injection";
+interface DemoResult {
+  blocked?: boolean;
+  paid?: boolean;
+  pending?: boolean;
+  hash?: string;
+  reason?: string;
+  status?: number;
+  error?: string;
+}
+const DEMO_BUTTONS: { id: DemoScenario; label: string }[] = [
+  { id: "over-limit", label: "Pay over the limit" },
+  { id: "stranger", label: "Pay a stranger" },
+  { id: "injection", label: "Prompt-injection drain" },
+];
 
 // --- formatting helpers ---------------------------------------------------------
 function cspr(motes: string | undefined): string {
@@ -68,6 +87,14 @@ export default function Page() {
   const [lastTick, setLastTick] = useState<number>(0);
   const [now, setNow] = useState<number>(Date.now());
 
+  // live demo state
+  const [demoRunning, setDemoRunning] = useState<DemoScenario | null>(null);
+  const [demoLines, setDemoLines] = useState<string[]>([]);
+  const [demoResult, setDemoResult] = useState<DemoResult | null>(null);
+
+  // pagination for the audit / payment history list
+  const [page, setPage] = useState<number>(1);
+
   const poll = useCallback(async () => {
     try {
       const r = await fetch("/api/state", { cache: "no-store" });
@@ -106,6 +133,70 @@ export default function Page() {
   const denied = audit.filter((a) => a.event === "denied");
   const stale = lastTick > 0 && now - lastTick > POLL_MS * 3;
 
+  // newest-first list + client-side pagination
+  const ordered = audit.slice().reverse();
+  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = ordered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  // Keep the page in range when the list shrinks/grows.
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  const runDemo = useCallback(
+    async (scenario: DemoScenario) => {
+      if (demoRunning) return;
+      setDemoRunning(scenario);
+      setDemoResult(null);
+      setDemoLines([]);
+      try {
+        const res = await fetch("/api/demo", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ scenario }),
+        });
+        if (!res.ok || !res.body) {
+          const body = await res.json().catch(() => ({}));
+          setDemoLines((l) => [...l, `⚠ demo failed: ${body.error ?? `HTTP ${res.status}`}`]);
+          setDemoResult({ blocked: false, error: body.error ?? `HTTP ${res.status}` });
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        // Read newline-delimited JSON as it streams in.
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const chunk = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!chunk) continue;
+            try {
+              const msg = JSON.parse(chunk);
+              if (msg.type === "log") {
+                setDemoLines((l) => [...l, msg.text as string]);
+              } else if (msg.type === "result") {
+                setDemoResult(msg as DemoResult);
+              }
+            } catch {
+              /* ignore partial / malformed line */
+            }
+          }
+        }
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        setDemoLines((l) => [...l, `⚠ demo error: ${m}`]);
+        setDemoResult({ blocked: false, error: m });
+      } finally {
+        setDemoRunning(null);
+      }
+    },
+    [demoRunning],
+  );
+
   const spent = state ? Number(BigInt(state.spentInPeriod)) : 0;
   const cap = state ? Number(BigInt(state.periodCap)) : 0;
   const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
@@ -114,7 +205,7 @@ export default function Page() {
     <div className="shell">
       <div className="masthead">
         <div className="brand">
-          <div className="sigil">⛨</div>
+          <img className="sigil" src="/aegis.png" alt="Aegis" style={{ objectFit: "cover" }} />
           <div>
             <h1>AEGIS</h1>
             <p className="tag">
@@ -139,7 +230,14 @@ export default function Page() {
         <section className="panel">
           <div className="panel-head">
             <h2>Policy &amp; Identity</h2>
-            <span className="count">who can spend · how much · when it resets</span>
+            <span className="count">
+              {state
+                ? `${shortHash(state.device)} can pay · ≤ ${cspr(state.perTxMax)}/tx · ${periodReset(
+                    state.periodStart,
+                    state.periodLen,
+                  )}`
+                : "who can spend · how much · when it resets"}
+            </span>
           </div>
           <div className="panel-body">
             <div className="kv">
@@ -212,7 +310,100 @@ export default function Page() {
           </div>
         </section>
 
-        {/* (c) Payment history / audit */}
+        {/* (c) Try it live — attack the guardian */}
+        <section className="panel full demo">
+          <div className="panel-head">
+            <h2>⚡ Try it live</h2>
+            <span className="count">one works · the rest are blocked</span>
+          </div>
+          <div className="panel-body">
+            <p className="note">
+              First the <strong>happy path</strong>: an in-policy payment the agent is allowed to
+              make — the Pi signs it and it lands on-chain (a real testnet pay, bounded by the period
+              cap). Then play a compromised brain: every off-policy button is denied{" "}
+              <em>before the device key is ever touched</em>.
+            </p>
+            <div className="demo-btns">
+              <button
+                className="demo-btn ok"
+                disabled={demoRunning !== null}
+                aria-busy={demoRunning === "normal"}
+                onClick={() => runDemo("normal")}
+              >
+                {demoRunning === "normal" ? "running…" : "✓ Normal payment"}
+              </button>
+              {DEMO_BUTTONS.map((b) => (
+                <button
+                  key={b.id}
+                  className="demo-btn"
+                  disabled={demoRunning !== null}
+                  aria-busy={demoRunning === b.id}
+                  onClick={() => runDemo(b.id)}
+                >
+                  {demoRunning === b.id ? "running…" : b.label}
+                </button>
+              ))}
+            </div>
+
+            {(demoLines.length > 0 || demoResult) && (
+              <div className="terminal" role="log" aria-live="polite">
+                {demoLines.map((ln, i) => (
+                  <div className="term-line" key={i}>
+                    {ln}
+                  </div>
+                ))}
+                {demoRunning && <div className="term-line caret">▌</div>}
+                {demoResult && (
+                  <div className="demo-result">
+                    {demoResult.paid ? (
+                      <span className="result-badge ok">
+                        ✓ Paid on-chain — the Pi signed it with the device key
+                        {demoResult.hash ? (
+                          <>
+                            {" · "}
+                            <a
+                              href={`${EXPLORER}${demoResult.hash}`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {shortHash(demoResult.hash)} ↗
+                            </a>
+                          </>
+                        ) : null}
+                      </span>
+                    ) : demoResult.pending ? (
+                      <span className="result-badge warn">
+                        ⏳ submitted — awaiting confirmation
+                        {demoResult.hash ? ` (${shortHash(demoResult.hash)})` : ""}
+                      </span>
+                    ) : demoResult.blocked ? (
+                      <span className="result-badge ok">
+                        🛑 Blocked — {demoResult.reason ?? "denied"} · the guardian held
+                      </span>
+                    ) : demoResult.error ? (
+                      <span className="result-badge warn">
+                        ⚠ {demoResult.error} · nothing signed, no funds moved
+                      </span>
+                    ) : (
+                      <span className="result-badge warn">
+                        ⚠ unexpected response · no funds moved
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* (c2) Fund the agent — connect wallet + deposit */}
+        <FundAgentPanel
+          treasuryBalance={state?.balance}
+          deviceKey={state?.device}
+          onConfirmed={poll}
+        />
+
+        {/* (d) Payment history / audit */}
         <section className="panel full">
           <div className="panel-head">
             <h2>Payment History · Pi Signer Audit</h2>
@@ -238,10 +429,7 @@ export default function Page() {
                   </tr>
                 </thead>
                 <tbody>
-                  {audit
-                    .slice()
-                    .reverse()
-                    .map((a, i) => (
+                  {pageRows.map((a, i) => (
                       <tr key={`${a.seq}-${a.ts}-${i}`}>
                         <td className="seqcell">{a.seq ?? "—"}</td>
                         <td className="mono" style={{ color: "var(--text-faint)" }}>
@@ -274,10 +462,31 @@ export default function Page() {
                 </tbody>
               </table>
             )}
+            {ordered.length > PAGE_SIZE && (
+              <div className="pager">
+                <button
+                  className="pager-btn"
+                  disabled={safePage <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  ← Prev
+                </button>
+                <span className="pager-label">
+                  page {safePage} of {pageCount}
+                </span>
+                <button
+                  className="pager-btn"
+                  disabled={safePage >= pageCount}
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                >
+                  Next →
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
-        {/* (d) RED panel — denied intents */}
+        {/* (e) RED panel — denied intents */}
         <section className="panel danger full">
           <div className="panel-head">
             <h2>⛔ Blocked by the Guardian</h2>

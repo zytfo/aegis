@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/aegis.png" alt="Aegis logo" width="140">
+</p>
+
 # Aegis - a hardware key guard for autonomous AI payments
 
 > Casper Agentic Buildathon 2026 · live on Casper testnet
@@ -72,6 +76,23 @@ that too. The point of using real hardware is what a software key can't give you
 In short: with a good contract the *amount* at risk is the same either way. Aegis takes away the
 attacker's ability to **walk off with a reusable key** — they get a narrow, temporary, instantly
 revocable channel instead.
+
+## Why a Raspberry Pi? (and why the design is signer-agnostic)
+
+The security here doesn't come from the Pi being special hardware — it comes from putting the key in
+a **separate trust domain** from the agent, where it can't be copied and can only ever sign a `pay`.
+A Raspberry Pi is simply the cheapest, most tangible way to show that: a second physical box you can
+hold, unplug, and prove the key isn't on the laptop.
+
+So the **signer is deliberately swappable**. The exact same design works with a hardware security
+module, a TEE / secure enclave (AWS Nitro, Intel SGX), a phone secure element, or a cloud signing
+service — most of which are *stronger* than a bare Pi. In production you'd reach for one of those;
+the Pi is the reference signer that makes the idea legible and demonstrable.
+
+We're honest about the Pi's limit: it's a normal Raspberry Pi, not a secure chip, so someone with
+physical root on it can read the key from memory (see below). What the design guarantees holds for
+*any* signer that keeps the key off the agent host — the Pi just makes it something you can point a
+camera at.
 
 ## What it protects (and what it doesn't)
 
