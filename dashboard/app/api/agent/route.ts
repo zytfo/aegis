@@ -134,7 +134,8 @@ export async function POST(req: Request) {
         try {
           const r = await fetch(`${SIGNER_URL}/sign-intent`, {
             method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${SIGNER_TOKEN}` },
+
+            headers: { "content-type": "application/json", authorization: `Bearer ${SIGNER_TOKEN}`, "ngrok-skip-browser-warning": "true" },
             body: JSON.stringify({ payee: payment.payee, amountMotes: payment.amountMotes, seq: nextSeq() }),
             signal: AbortSignal.timeout(200_000),
           });

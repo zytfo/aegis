@@ -12,6 +12,7 @@ export async function GET() {
   try {
     const res = await fetch(`${SIGNER_URL.replace(/\/$/, "")}/audit`, {
       cache: "no-store",
+      headers: { "ngrok-skip-browser-warning": "true" },
       // Don't hang the dashboard if the signer is down.
       signal: AbortSignal.timeout(3000),
     });
