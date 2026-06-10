@@ -4,7 +4,7 @@
 
 # Aegis - a hardware key guard for autonomous AI payments
 
-> Casper Agentic Buildathon 2026 · live on Casper testnet
+> [Casper Agentic Buildathon 2026](https://dorahacks.io/hackathon/casper-agentic-buildathon) · live on Casper testnet
 
 ## What it does
 

@@ -18,6 +18,12 @@ export async function POST(req: Request) {
   }
   if (!txJson) return NextResponse.json({ error: "missing transaction" }, { status: 400 });
 
+  // casper-js-sdk's Transaction.toJSON() returns the bare V1 body {hash,payload,approvals},
+  // but account_put_transaction expects the Transaction enum {Version1:{...}} (or {Deploy:{...}}).
+  // Wrap it unless it is already enum-tagged.
+  const j = txJson as Record<string, unknown>;
+  const transaction = j.Version1 || j.Deploy ? j : { Version1: j };
+
   try {
     const r = await fetch(NODE, {
       method: "POST",
@@ -26,7 +32,7 @@ export async function POST(req: Request) {
         jsonrpc: "2.0",
         id: 1,
         method: "account_put_transaction",
-        params: { transaction: txJson },
+        params: { transaction },
       }),
       signal: AbortSignal.timeout(15000),
     });
