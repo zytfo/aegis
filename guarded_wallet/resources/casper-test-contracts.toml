@@ -1,0 +1,6 @@
+last_updated = "2026-06-09T15:59:33Z"
+
+[[contracts]]
+name = "GuardedWallet"
+package_name = "GuardedWallet"
+package_hash = "hash-1359b30133125889599ba0127868f83c06820677341e5eafa70eba49c0fe7bb3"
