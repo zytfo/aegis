@@ -1,261 +1,182 @@
-# Aegis — a hardware-rooted payment guardian for autonomous AI agents
+# Aegis - a hardware key guard for autonomous AI payments
 
-> Casper Agentic Buildathon 2026 · Casper Innovation Track · **live on Casper testnet**
+> Casper Agentic Buildathon 2026 · live on Casper testnet
 
-**What & why.** Autonomous AI agents are being handed money, but the standard design puts the
-agent's private key in a `.env` next to the agent — so a prompt-injected or compromised brain can
-sign *anything*, and anyone who reads that key can sign **forever, from anywhere, even after you
-wipe the host**. Aegis breaks the "brain = key" coupling. The decision still comes from an
-untrusted AI **brain**, but the signature comes from a **physical Raspberry Pi (the Pi Signer)**
-that holds the device key, never releases it, and will assemble and sign **only** a policy-checked
-`pay`. On-chain, an Odra `GuardedWallet` contract keeps the treasury in a contract purse and
-enforces a two-account model (owner vs. device), an allowlist, a per-transaction max, and a period
-spending cap. Native CSPR is the core rail; x402 is a secondary, gated rail (see below).
+## What it does
 
----
+People are starting to let AI agents spend money on their behalf. The usual setup keeps the
+agent's private key right next to the agent — so if the agent is tricked or hacked (for example
+by a "prompt injection"), it can sign away everything. And whoever steals that key can keep
+spending forever, from any machine.
 
-## Architecture
+Aegis splits the job in two:
 
-```
-                          (untrusted)                         (hardware enforcer + signer)
-  external text ──► ┌──────────────┐   intent {payee,amount,seq}   ┌───────────────────────┐
-  prompt-injection  │   BRAIN      │ ─────────  HTTPS  ──────────► │   PI SIGNER (Raspberry │
-  ───────────────►  │ (AI agent,   │   Bearer token / mTLS         │   Pi, headless)       │
-                    │  TypeScript) │                               │                       │
-                    │  HOLDS NO KEY│ ◄──── {hash, status} ──────── │  • device Ed25519 key │
-                    └──────────────┘                               │    (encrypted at rest,│
-                          │                                        │     never leaves Pi)  │
-                          │ can only express                       │  • STATIC policy:     │
-                          │ {payee, amount, seq}                   │    allowlist + per-tx │
-                          │                                        │  • builds deploy from │
-                          │                                        │    primitive fields   │
-                          │                                        │  • HARDCODES gas/     │
-                          │                                        │    entrypoint         │
-                          │                                        │  • signs ONLY pay()   │
-                          │                                        │  • monotonic seq      │
-                          │                                        │  • append-only audit  │
-                          │                                        └───────────┬───────────┘
-                          │                                       signed pay() TransactionV1
-                          ▼                                                    ▼
-                    ┌───────────────────────────────────────────────────────────────────┐
-                    │           GuardedWallet  (Odra/Rust → WASM)  ·  Casper testnet      │
-                    │  treasury in CONTRACT PURSE   owner acct (policy)  device acct (pay)│
-                    │  STATEFUL policy: allowlist + per_tx_max + period_cap + spent       │
-                    │  pay() = device-only · add_payee/set_policy/rotate_device_key=owner │
-                    └───────────────────────────────────────────────────────────────────┘
-                          ▲                                                    ▲
-                          │  free read-only global-state queries (no gas)      │
-                    ┌─────┴───────────────┐                                    │
-                    │  DASHBOARD (Next.js)│ ◄─── GET /audit (Pi Signer log) ───┘
-                    │  policy · allowlist │
-                    │  history · denials  │
-                    └─────────────────────┘
+- A **brain** (the AI agent) decides *what* to pay. It holds **no key** and can only say
+  "pay this account this amount."
+- A **Pi Signer** (a real Raspberry Pi) holds the key, checks the payment against your rules, and
+  signs **only** an approved payment. The key never leaves the device.
+
+So even a fully hacked brain can't steal: it has no key, and the Pi refuses anything outside your
+rules. On top of that, a **GuardedWallet** smart contract on Casper keeps the money and enforces
+the same rules a second time, on-chain.
+
+## How it works
+
+```mermaid
+flowchart LR
+    inj([prompt injection / hacked host]):::bad -.->|tries to corrupt| brain
+
+    brain["🧠 Brain — AI agent<br/>untrusted · holds NO key<br/>can only ask: pay account, amount"]:::brain
+    pi["🔒 Pi Signer — Raspberry Pi<br/>holds the key · checks rules<br/>signs ONLY an approved pay"]:::pi
+    contract["📜 GuardedWallet — Casper testnet<br/>holds the money · enforces rules again"]:::chain
+    dash["📊 Dashboard<br/>read-only view"]:::dash
+
+    brain -->|"request: payee, amount, seq"| pi
+    pi -->|"signed pay() transaction"| contract
+    pi -.->|"tx result"| brain
+    contract -.->|"free state reads"| dash
+    pi -.->|"audit log"| dash
+
+    classDef brain fill:#1f2937,stroke:#60a5fa,color:#e5e7eb;
+    classDef pi fill:#064e3b,stroke:#34d399,color:#e5e7eb;
+    classDef chain fill:#1e3a8a,stroke:#93c5fd,color:#e5e7eb;
+    classDef dash fill:#3730a3,stroke:#a5b4fc,color:#e5e7eb;
+    classDef bad fill:#7f1d1d,stroke:#f87171,color:#fee2e2;
 ```
 
-Two complementary policy layers, by responsibility (not duplication):
+The rules live in two places, each doing a different job:
 
-- **Layer 1 — on-chain (`GuardedWallet`):** allowlist + per-tx max + **stateful** period cap.
-  Bounds the *damage per period*. (This bound is the same for a hardware or a software signer —
-  so it is not, by itself, the moat.)
-- **Layer 2 — hardware (Pi):** static allowlist + per-tx checks with **no RPC dependency**, the
-  device key that **cannot be exfiltrated**, a signer that **emits only `pay`**, and **clean
-  revocation**. This is the moat (see the table below).
+- **On the Pi (fast, local):** the allowlist (who you may pay) and the per-payment limit. No
+  network needed — the Pi just refuses to sign anything off-list or over the limit.
+- **On-chain (the contract):** the same allowlist and limit, plus a spending cap per time window.
+  This is the source of truth and the second line of defense.
 
----
+A small design choice that matters: the **money lives in the contract**, while the **device account
+the Pi signs with holds only a little gas** to pay fees. So even attacks on the device's gas can't
+reach the treasury, and the Pi hardcodes the gas itself (the brain can't inflate it).
 
-## The honest invariant (threat model)
+## Why this is different
 
-**Gas/float vs. treasury separation (the key design choice).** The treasury lives in the
-`GuardedWallet` **contract purse**. The **device account** (the one the Pi signs with) holds only a
-small **gas float** to pay `pay()` fees. Attacks on the device account's gas therefore cannot reach
-the treasury. The Pi **hardcodes** the payment/gas amount (it never reads gas from the intent), so
-the brain cannot gas-grief.
+A strong contract alone already caps *how much* can be lost per period — a software signer could do
+that too. The point of using real hardware is what a software key can't give you:
 
-**Invariant — under *remote* compromise of the brain:**
-
-- **No portable key leaks.** There is no transferable credential to copy.
-- **Off-policy withdrawal = 0.** Off-allowlist / over-cap requests are refused.
-- **Only `pay` is ever signed.** No arbitrary deploy can be produced by the signer.
-- **Damage ≤ cap.** The treasury can be touched only within `per_tx_max` / `period_cap` to
-  **allowlisted** payees.
-- **Clean revocation.** The owner's `rotate_device_key` (or token revocation) cuts off access
-  **without any key having leaked** — so you also know nothing was signed with a stolen key.
-
-Maximum loss from a remote brain compromise = the small gas float + payments within the cap to
-already-allowlisted payees.
-
-**Explicitly out of scope (stated honestly):**
-
-- **Root / physical compromise of the Pi itself.** With live root, the decrypted key is reachable
-  in RAM — a different, heavier threat class. Aegis protects against the *remote* brain-compromise
-  vector (mass prompt-injection / RCE), not Pi root. The Pi is **not** a TEE/TPM; at-rest
-  encryption only covers theft of a powered-off device.
-- **Bounded DoS within the leash.** A compromised brain (or token thief) can spam *policy-valid*
-  payments to an allowlisted payee until the `period_cap` is exhausted — by design, that is the
-  edge of the leash. Mitigated by fast token revocation / device-key rotation.
-
----
-
-## Aegis vs. a software-signer (same on-chain policy)
-
-| Scenario | Software-signer (key on the brain host) | **Aegis** (hardware-signer) |
+| If the host running the agent is compromised… | Software key (in a file) | **Aegis** (key on the Pi) |
 |---|---|---|
-| Off-policy withdrawal on-chain | ✅ blocked by contract | ✅ blocked by contract |
-| Damage per period under host compromise | ≤ cap | ≤ cap (same) |
-| Copy the key and sign **from another machine, after wiping the host** | ❌ can, indefinitely | ✅ nothing to copy |
-| Native-transfer the gas float with the stolen key | ❌ can | ✅ key unreachable |
-| Reuse the key on another contract / chain | ❌ can (full account rights) | ✅ signer emits only `pay` |
-| Revoke access without the key having leaked | ❌ key already leaked | ✅ rotate / revoke token |
+| Pay off-list / over the cap on-chain | blocked by contract | blocked by contract |
+| Loss this period | ≤ cap | ≤ cap (same) |
+| Copy the key and keep signing from another machine | yes, forever | **nothing to copy** |
+| Drain the account's gas with the stolen key | yes | **key unreachable** |
+| Reuse the key on other contracts/chains | yes | **signer only ever signs `pay`** |
+| Cut off the attacker without the key having leaked | no — key already leaked | **rotate the device key** |
 
-**Message:** with a strong contract, the *per-period damage bound is identical*. Aegis removes the
-**portability and reusability** of a compromised access — the attacker gets a temporary, narrow,
-instantly-revocable channel instead of a forever-key.
+In short: with a good contract the *amount* at risk is the same either way. Aegis takes away the
+attacker's ability to **walk off with a reusable key** — they get a narrow, temporary, instantly
+revocable channel instead.
 
----
+## What it protects (and what it doesn't)
 
-## Live testnet artifacts (real, recorded)
+**Protects — if the brain is hacked remotely:**
+- the key never leaks (there's no copyable credential),
+- nothing off your rules is ever signed,
+- the signer only ever produces a `pay` (no arbitrary transaction),
+- the most you can lose is the small gas float plus payments within your cap to people already on
+  your allowlist,
+- the owner can rotate the device key to cut access instantly — knowing nothing was signed with a
+  stolen key.
 
-- **Chain:** `casper-test` · **Node:** `https://node.testnet.casper.network` · **Explorer:**
-  https://testnet.cspr.live
-- **GuardedWallet contract package:**
-  [`hash-1359b30133125889599ba0127868f83c06820677341e5eafa70eba49c0fe7bb3`](https://testnet.cspr.live/contract-package/1359b30133125889599ba0127868f83c06820677341e5eafa70eba49c0fe7bb3)
+**Doesn't protect (said plainly):**
+- **Someone with physical root on the Pi itself.** Then the live key is in the Pi's memory. Aegis
+  guards against *remote* compromise of the brain, not someone owning the box. The Pi is a normal
+  Raspberry Pi, not a secure chip.
+- **Spam within your own rules.** A hacked brain can keep paying an allowlisted account until the
+  period cap is used up. That's the edge of the leash by design — you cut it with a key rotation.
 
-| What it proves | Tx | Link |
-|---|---|---|
-| **Autonomous end-to-end** — brain → Pi Signer → chain `pay()` | `7921922…6dde` | https://testnet.cspr.live/transaction/792192296fbf943f01ad8fe704ead59d9e0093268fd6e8bc3d5df14d85346dde |
-| Contract **deploy** (signed by owner) | `e8614af…a4a0` | https://testnet.cspr.live/transaction/e8614af94cfd73b4480ec8833f5b7212baece629b0d4f7ff8895990a0565a4a0 |
-| **add_payee** populates the allowlist (owner-only) | `601956f…eaf4` | https://testnet.cspr.live/transaction/601956fad1fea8d685f7f62ea03b4965300a3f6378457c674cb990ebe96eeaf4 |
-| Owner calling `pay` **reverts NotDevice** (two-account auth works) | `112c7b2…525b` | https://testnet.cspr.live/transaction/112c7b29e7b8e9d5c9b442cbadb5b7a0312f9f536c7de6e9b3799ce0ff36525b |
-| **deposit** 30 CSPR into the contract purse (via proxy_caller) | `3bf0fb0…0b56` | https://testnet.cspr.live/transaction/3bf0fb08c79a1da594a5c6a9de45c916458005436da5feddcf4bbe81b9250b56 |
-| Device `pay` **succeeds** (in-policy, `Paid` event) | `65356cc…393b` | https://testnet.cspr.live/transaction/65356ccb100c36e74ea07952bb3c7130708ccc1f740aab386a29da8d9311393b |
-| Device paying a stranger **reverts PayeeNotAllowed** (allowlist works) | `e66c455…2a91` | https://testnet.cspr.live/transaction/e66c455f72f4203066034293da9b0e9259ff50e81d83fb62eba3c7acd2e62a91 |
+## Live on Casper testnet
 
-Full deploy/exercise log: [`guarded_wallet/scripts/owner.md`](guarded_wallet/scripts/owner.md).
+Everything below is real and recorded. Network `casper-test`, node
+`https://node.testnet.casper.network`, explorer https://testnet.cspr.live.
 
----
+GuardedWallet contract package:
+[`hash-1359b30133125889599ba0127868f83c06820677341e5eafa70eba49c0fe7bb3`](https://testnet.cspr.live/contract-package/1359b30133125889599ba0127868f83c06820677341e5eafa70eba49c0fe7bb3)
+
+| What it shows | Transaction |
+|---|---|
+| **The whole point:** brain → Pi Signer → on-chain payment, fully autonomous | [`792192…6dde`](https://testnet.cspr.live/transaction/792192296fbf943f01ad8fe704ead59d9e0093268fd6e8bc3d5df14d85346dde) |
+| Contract deployed | [`e8614a…a4a0`](https://testnet.cspr.live/transaction/e8614af94cfd73b4480ec8833f5b7212baece629b0d4f7ff8895990a0565a4a0) |
+| Owner adds a payee to the allowlist | [`601956…eaf4`](https://testnet.cspr.live/transaction/601956fad1fea8d685f7f62ea03b4965300a3f6378457c674cb990ebe96eeaf4) |
+| Owner trying to pay is rejected (only the device may pay) | [`112c7b…525b`](https://testnet.cspr.live/transaction/112c7b29e7b8e9d5c9b442cbadb5b7a0312f9f536c7de6e9b3799ce0ff36525b) |
+| 30 CSPR deposited into the contract treasury | [`3bf0fb…0b56`](https://testnet.cspr.live/transaction/3bf0fb08c79a1da594a5c6a9de45c916458005436da5feddcf4bbe81b9250b56) |
+| Device makes an allowed, in-limit payment | [`65356c…393b`](https://testnet.cspr.live/transaction/65356ccb100c36e74ea07952bb3c7130708ccc1f740aab386a29da8d9311393b) |
+| Device paying a stranger is rejected (allowlist works) | [`e66c45…2a91`](https://testnet.cspr.live/transaction/e66c455f72f4203066034293da9b0e9259ff50e81d83fb62eba3c7acd2e62a91) |
+
+Full deploy log and commands: [`guarded_wallet/scripts/owner.md`](guarded_wallet/scripts/owner.md).
 
 ## Repository layout
 
 ```
-guarded_wallet/   Odra/Rust GuardedWallet contract (+ odra-cli deploy tool, 22 OdraVM tests)
-signer/           Pi Signer daemon (TypeScript/Node) — device key, static policy, /sign-intent, /audit
-agent/            The brain (TypeScript) — autonomous payer; also the software_signer ANTI-PATTERN contrast
-dashboard/        Next.js read-only dashboard (live state + audit)
-scripts/          5-beat demo driver scripts
-shared/           shared intent/policy types
-keys/             local testnet keypairs (gitignored; NOT in this repo)
-docs/             design spec
+guarded_wallet/   GuardedWallet smart contract (Odra/Rust)
+signer/           Pi Signer daemon (TypeScript) - holds the key, checks rules, signs payments
+agent/            The brain (TypeScript) - autonomous payer + the "what NOT to do" contrast
+dashboard/        Next.js read-only dashboard (live state + audit log)
+scripts/          demo scripts
+shared/           shared types
 ```
 
----
+Secrets (`SIGNER_TOKEN`, `KEY_PASS`, key files in `keys/`) are never committed — copy each
+component's `.env.example` and fill in your own.
 
-## Setup & run
+## Run it
 
-> All real secrets (`SIGNER_TOKEN`, `KEY_PASS`, key PEMs) live in `.env` files and `keys/`, which
-> are **not** committed. Copy the `.env.example` in each component and fill in your own values.
-> Node v24.
+Requires Node v24. The contract is **already deployed on testnet**, so you can run the dashboard and
+read live state without deploying anything.
 
-### 1. Contract (`guarded_wallet/`) — cargo-odra
+**1. Contract** (`guarded_wallet/`) — only if you want to test/build/redeploy:
 ```bash
 export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"
-rustup target add wasm32-unknown-unknown --toolchain nightly-2026-01-01
-cargo odra test            # 22 OdraVM tests (auth, allowlist, per-tx, period cap, rotate, ...)
-cargo odra build           # -> wasm/GuardedWallet.wasm
-# Deploy + owner setup (needs funded owner/device keys + a project-root .env):
-cargo run --bin guarded_wallet_cli -- deploy
-cargo run --bin guarded_wallet_cli -- contract GuardedWallet add_payee --payee <ACCT> --gas 5000000000
-cargo run --bin guarded_wallet_cli -- contract GuardedWallet deposit --attached_value <MOTES> --gas 15000000000 -p
+cargo odra test
+cargo odra build
 ```
-The contract is **already deployed and exercised** on testnet (see artifacts above) — you do not
-need to redeploy to run the dashboard or read state.
 
-### 2. Pi Signer (`signer/`)
+**2. Pi Signer** (`signer/`) — runs on the Raspberry Pi:
 ```bash
-cd signer
-npm install
-cp .env.example .env        # set SIGNER_TOKEN, KEY_PASS (daemon refuses dev-defaults)
-npx vitest run              # module tests
-npm start                   # listens on :8787 — holds the device key, exposes /sign-intent + /audit
+cd signer && npm install
+cp .env.example .env
+npm start
 ```
 
-### 3. Brain / agent (`agent/`)
+**3. Brain** (`agent/`) — runs on your laptop:
 ```bash
-cd agent
-npm install
-SIGNER_URL=http://127.0.0.1:8787 SIGNER_TOKEN=<same-token> npm start   # one autonomous run
-npx vitest run             # includes the injected-drain and software-signer contrast tests
+cd agent && npm install
+SIGNER_URL=http://<pi-ip>:8787 SIGNER_TOKEN=<same-token> npm start
 ```
 
-### 4. Dashboard (`dashboard/`)
+**4. Dashboard** (`dashboard/`) — runs anywhere:
 ```bash
-cd dashboard
-npm install
-cp .env.example .env        # CASPER_NODE_ADDRESS, CONTRACT_PACKAGE_HASH, SIGNER_URL
-npm run dev                 # http://localhost:3000  (reads are FREE — no gas, no keys)
-# or: npm run build && npm run start
+cd dashboard && npm install
+cp .env.example .env
+npm run dev
 ```
-`GET /api/state` returns the live `GuardedWallet` state — `{ balance, perTxMax, periodCap,
-spentInPeriod, periodStart, periodLen, owner, device, payees }` — read directly from the node.
-`GET /api/audit` proxies the Pi Signer's audit log (degrades to `[]` if the signer is offline).
 
-### 5. Demo (`scripts/`)
-With the signer running and `SIGNER_TOKEN` exported:
+**5. Demo** (`scripts/`) — signer running and `SIGNER_TOKEN` exported:
 ```bash
-./scripts/demo-1-normal.sh        # autonomous in-policy native-CSPR pay -> on-chain tx
-./scripts/demo-2-policy-block.sh  # 403 OverPerTx, 403 PayeeNotAllowed, + on-chain period-cap revert path
-./scripts/demo-3-moneyshot.sh     # brain has no key; injected drain denied; software-signer contrast; rotate_device_key
+./scripts/demo-1-normal.sh        # an autonomous, in-policy payment lands on-chain
+./scripts/demo-2-policy-block.sh  # over-limit and not-allowlisted payments are refused
+./scripts/demo-3-moneyshot.sh     # the brain has no key; an injected drain is blocked
 ```
-The scripts print camera cues and never hardcode secrets (they read `signer/.env` and public facts
-from `owner.md`). The live key-copy/native-transfer drain in beat 3 runs **only** if you provide a
-funded throwaway key via `THROWAWAY_KEY_PEM` / `THROWAWAY_DRAIN_TO`.
 
----
+## Built with the Casper AI Toolkit
 
-## How the dashboard reads Odra state (no transaction, no gas)
+- **Odra 2.7.2** — the GuardedWallet contract (Rust → WASM), with tests and a live testnet deploy.
+- **casper-js-sdk 5.0.12** — the Pi Signer builds, signs (key stays on the device), and submits the
+  `pay` transaction on Casper 2.0.
+- **Public Casper node** — the dashboard's free, read-only state queries.
 
-`dashboard/lib/casper.ts` resolves the contract package → active Contract entity, then reads each
-Odra `Var`/`Mapping` field out of the contract's single `state` **dictionary**. Odra's dictionary
-item key for a top-level field at module index *N* is `hex(blake2b256( u32_be(N) ))` (fields are
-indexed from 1). The contract's main-purse balance is read with `query_balance`. All of this is
-free global-state JSON-RPC — no speculative-exec, no funds, no keys.
+## Honest notes
 
----
-
-## Casper AI Toolkit components used
-
-- **Odra (2.7.2)** — the `GuardedWallet` contract (Rust → WASM), `proxy_caller` for the payable
-  `deposit`, 22 OdraVM tests, and live testnet deploy via the odra-cli.
-- **casper-js-sdk (v5.0.12)** — the Pi Signer builds, signs (Ed25519, key on-device), and submits
-  the `pay` contract-call **TransactionV1** (Casper 2.0 / Condor); also the software-signer contrast.
-- **CSPR.cloud / public node** — the dashboard's free read-only global-state queries for live policy,
-  balance, allowlist, and spend.
-- **x402** — *secondary rail.* Implemented as a flow (`agent/src/x402.ts`) only; see "what's mocked".
-
----
-
-## What's mocked / secondary (honest)
-
-- **x402 is secondary and gated.** On Casper, x402 is **not** native CSPR — it is a **CEP-18
-  (fungible-token)** transfer authorized off-chain (EIP-712-style `transfer_with_authorization`) and
-  settled by a facilitator. The required CEP-18 **test token is not obtainable on `casper-test`**, so
-  a live x402 round-trip cannot be exercised. We implement the flow and unit-test it against a mocked
-  fetch + mocked authorization; the on-chain `GuardedWallet` does **not** gate this rail (different
-  asset, settled by the facilitator) — for x402 the policy is hardware-only. **Native CSPR via the Pi
-  Signer is the core, fully-live rail.**
-- **The x402 inbound "beacon" / earning demo** (design §6) is a stretch goal and is **not** built.
-- **`software_signer.ts` is the deliberate ANTI-PATTERN** used for the moat contrast — it is never
-  used by Aegis itself.
-- **Owner setup is CLI-driven** (`casper-client` / odra-cli); CSPR.click wallet integration is out
-  of scope.
-
----
-
-## Demo video
-
-_📹 Placeholder — add the recorded 5-beat walkthrough link here._
-
----
-
-## License
-
-ISC (see component `package.json` files).
+- **Native CSPR is the real, live rail.** x402 on Casper turns out to be a fungible-token (CEP-18)
+  flow settled by a separate facilitator, not a native-CSPR payment through our contract, and the
+  test token isn't available on testnet — so x402 is a secondary path we sketch in code but don't
+  run live. The contract does not govern that path.
+- **`agent/src/software_signer.ts` is the deliberate "bad example"** used only to contrast against
+  Aegis in the demo — Aegis itself never uses it.
+- Owner setup (deploy, add payee, set policy) is done from the command line.
