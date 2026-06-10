@@ -323,6 +323,13 @@ export default function Page() {
           </div>
         </section>
 
+        {/* (b2) Fund the agent — connect wallet + deposit (refill the treasury before acting) */}
+        <FundAgentPanel
+          treasuryBalance={state?.balance}
+          deviceKey={state?.device}
+          onConfirmed={poll}
+        />
+
         {/* (c) Try it live — attack the guardian */}
         <section className="panel full demo">
           <div className="panel-head">
@@ -408,13 +415,6 @@ export default function Page() {
             )}
           </div>
         </section>
-
-        {/* (c2) Fund the agent — connect wallet + deposit */}
-        <FundAgentPanel
-          treasuryBalance={state?.balance}
-          deviceKey={state?.device}
-          onConfirmed={poll}
-        />
 
         {/* (d) Payment history / audit */}
         <section className="panel full">

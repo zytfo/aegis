@@ -23,7 +23,7 @@ import {
   PublicKey,
   Args,
   CLValue,
-  Key,
+  CLTypeUInt8,
   Transaction,
   TransactionV1,
 } from "casper-js-sdk";
@@ -59,22 +59,9 @@ export function csprToMotes(cspr: string | number): bigint {
   return BigInt(whole) * MOTES_PER_CSPR + BigInt(fracPadded || "0");
 }
 
-/**
- * Build the package_hash runtime arg in one of two CL encodings.
- *
- * Why two: the exact CL type the node/Odra proxy expects for `package_hash` is the
- * single fragile detail of this call. The two plausible encodings are:
- *   - "key"   : CLKey wrapping a Hash key  (`hash-1359b3…`)         <- default
- *   - "bytes" : a raw 32-byte ByteArray of the package hash         <- alternate
- * If the first click is rejected by the node with a parse/type error, flip the
- * `packageHashEncoding` flag (single place to change) and retry — no other code
- * change needed. Default is "key".
- */
-function packageHashArg(encoding: PackageHashEncoding): CLValue {
-  return encoding === "bytes"
-    ? CLValue.newCLByteArray(hexToBytes(PACKAGE_HASH_HEX))
-    : CLValue.newCLKey(Key.newKey(PACKAGE_HASH));
-}
+// Note: the `packageHashEncoding` field on DepositTxParams is retained for
+// backward-compat but no longer used — the proxy requires a fixed encoding
+// (ContractPackageHash = ByteArray(32)), verified against casper-types.
 
 export interface DepositTxParams {
   /** active public key hex from the connected wallet */
@@ -95,19 +82,24 @@ export function depositTx({
   activePubKeyHex,
   amountMotes,
   proxyBytes,
-  packageHashEncoding = "key",
 }: DepositTxParams): Transaction {
   const amount = amountMotes.toString();
 
   // The proxy forwards `attached_value` from our purse and calls
-  // package_hash::entry_point(args). `args` is the *inner* entry-point args,
-  // CL-serialized; deposit() takes none, so it's an empty Args byte array.
+  // package_hash::entry_point(inner_args). The arg CL-types MUST match Odra's proxy
+  // (per casper-types): package_hash = ContractPackageHash = ByteArray(32); the inner
+  // `args` = Bytes = List(U8) of the CL-serialized inner RuntimeArgs (empty for deposit).
+  // Wrong CL-types (Key for package_hash, or ByteArray for args) submit fine but the
+  // proxy reverts on-chain with ApiError::InvalidArgument.
   const innerArgs = new Args(new Map()).toBytes();
 
   const args = Args.fromMap({
-    package_hash: packageHashArg(packageHashEncoding),
+    package_hash: CLValue.newCLByteArray(hexToBytes(PACKAGE_HASH_HEX)),
     entry_point: CLValue.newCLString("deposit"),
-    args: CLValue.newCLByteArray(innerArgs),
+    args: CLValue.newCLList(
+      CLTypeUInt8,
+      Array.from(innerArgs, (b) => CLValue.newCLUint8(b)),
+    ),
     attached_value: CLValue.newCLUInt512(amount),
     amount: CLValue.newCLUInt512(amount),
   });
@@ -214,8 +206,16 @@ export async function signAndSubmit(
   if (res.cancelled) throw new Error("signature cancelled in the wallet");
   if (!res.signature) throw new Error("wallet returned no signature");
 
-  // 3. Apply the signature and rewrap into a submittable Transaction.
-  TransactionV1.setSignature(v1, res.signature, PublicKey.fromHex(activePubKeyHex));
+  // 3. Apply the signature. Casper Wallet returns the RAW signature (64 bytes), but a
+  //    Casper approval must be algorithm-tagged (01 = ed25519, 02 = secp256k1) and
+  //    setSignature stores the bytes verbatim — so prepend the algo byte when missing.
+  //    Without this the approval is malformed and the node rejects the tx with -32602.
+  const algoByte = parseInt(activePubKeyHex.slice(0, 2), 16);
+  const sigBytes =
+    res.signature.length === 65
+      ? res.signature
+      : new Uint8Array([algoByte, ...res.signature]);
+  TransactionV1.setSignature(v1, sigBytes, PublicKey.fromHex(activePubKeyHex));
   const signed = Transaction.fromTransactionV1(v1);
 
   // 4. Submit through OUR server route. A browser cannot POST straight to the public

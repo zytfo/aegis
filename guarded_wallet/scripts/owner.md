@@ -165,15 +165,3 @@ Error codes (src/errors.rs): `PayeeNotAllowed=3`, `NotOwner=4`, `NotDevice=5`. O
 
 Post-exercise on-chain state: contract `balance = 30000000000` (30 CSPR), `spent_in_period = 1000000000`
 (1 CSPR), payee purse `balance = 1000000000` (1 CSPR received).
-
-## Reproducible read-only checks
-
-```bash
-export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"
-cd /Users/zytfo/Desktop/Projects/hackathon/guarded_wallet
-cargo run --bin guarded_wallet_cli -- contract GuardedWallet get_state
-cargo run --bin guarded_wallet_cli -- contract GuardedWallet balance
-cargo run --bin guarded_wallet_cli -- contract GuardedWallet list_payees
-cargo run --bin guarded_wallet_cli -- contract GuardedWallet is_allowed \
-  --payee account-hash-fed4d31a4c43bd2e527df1dbf01abf3ace959dda2ce712e45b327b608095e54a
-```
