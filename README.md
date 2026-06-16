@@ -6,6 +6,8 @@
 
 > [Casper Agentic Buildathon 2026](https://dorahacks.io/hackathon/casper-agentic-buildathon) · live on Casper testnet
 
+> 🎥 **[Watch the demo](https://youtu.be/7DmvV43UQCs)** - a payment signed by the Pi, a prompt-injection blocked, and the signer unplugged live.
+
 ## What it does
 
 People are starting to let AI agents spend money on their behalf. The usual setup keeps the
