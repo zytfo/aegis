@@ -12,7 +12,7 @@ target
 # sibling packages the dashboard build does not need
 guarded_wallet
 signer
-agent
+/agent
 keys
 docs
 
